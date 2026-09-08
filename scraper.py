@@ -1,3 +1,4 @@
+import hashlib
 import os
 import requests
 from bs4 import BeautifulSoup
@@ -13,25 +14,28 @@ def invia_telegram(testo):
         "chat_id": CHAT_ID,
         "text": testo,
         "parse_mode": "HTML",
-        "disable_web_page_preview": False
+        "disable_web_page_preview": True
     }
     try:
-        requests.post(endpoint, data=payload, timeout=15)
+        r = requests.post(endpoint, data=payload, timeout=15)
+        r.raise_for_status()
     except Exception as e:
         print(f"Errore invio Telegram: {e}")
 
+def pulisci_testo(t):
+    return " ".join(t.split())
+
 def main():
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
     }
     res = requests.get(URL, headers=headers, timeout=25)
     res.raise_for_status()
-    
+
     soup = BeautifulSoup(res.text, "html.parser")
-    
-    # Isola il corpo principale della pagina dell'Unibas
+
+    # Isola l'area principale dei contenuti della bacheca Unibas
     corpo = soup.find("div", class_="testo") or soup.find("div", id="content") or soup
-    links = corpo.find_all("a")
 
     visti_precedenti = set()
     if os.path.exists(FILE_MEMORIA):
@@ -39,39 +43,48 @@ def main():
             visti_precedenti = set(line.strip() for line in f if line.strip())
 
     primo_avvio = not os.path.exists(FILE_MEMORIA)
-    nuovi_avvisi = []
+    nuovi_identificatori = []
 
-    for a in links:
-        titolo = a.get_text(strip=True)
-        href = a.get("href", "")
+    # Seleziona tutti i blocchi di testo rilevanti (paragrafi, punti elenco, link)
+    elementi = corpo.find_all(["p", "li", "a"])
 
-        # Salta voci di navigazione e link vuoti
-        if not titolo or len(titolo) < 5 or href.startswith("#") or "javascript" in href:
+    for el in elementi:
+        testo = pulisci_testo(el.get_text())
+
+        # Salta stringhe troppo corte (date isolate, freccette, menu di navigazione)
+        if len(testo) < 25:
             continue
 
-        identificatore = f"{titolo}|{href}"
+        # Crea un identificatore univoco basato sul testo (evita problemi con caratteri speciali)
+        hash_id = hashlib.md5(testo.encode("utf-8")).hexdigest()
 
-        if identificatore not in visti_precedenti:
-            nuovi_avvisi.append(identificatore)
-            
-            # Invia messaggio solo se non è la prima scansione di inizializzazione
+        if hash_id not in visti_precedenti:
+            nuovi_identificatori.append(hash_id)
+
             if not primo_avvio:
-                link_completo = href if href.startswith("http") else f"https://diss.unibas.it{href}"
+                # Controlla se l'elemento include anche un eventuale link da allegare
+                link_tag = el if el.name == "a" else el.find("a")
+                link_info = ""
+                if link_tag and link_tag.get("href"):
+                    href = link_tag.get("href")
+                    link_completo = href if href.startswith("http") else f"https://diss.unibas.it{href}"
+                    link_info = f"\n\n🔗 <a href='{link_completo}'>Apri allegato/link</a>"
+
                 messaggio = (
-                    f"📢 <b>Nuovo avviso Bacheca DiSS Unibas:</b>\n\n"
-                    f"{titolo}\n\n"
-                    f"🔗 <a href='{link_completo}'>Apri avviso / documento</a>"
+                    f"📢 <b>Nuovo avviso Bacheca DiSS:</b>\n\n"
+                    f"{testo}"
+                    f"{link_info}"
                 )
                 invia_telegram(messaggio)
 
-    # Salva la lista aggiornata
-    if nuovi_avvisi:
+    # Salva i nuovi elementi per non ri-notificarli
+    if nuovi_identificatori:
         with open(FILE_MEMORIA, "a", encoding="utf-8") as f:
-            for voce in nuovi_avvisi:
-                f.write(voce + "\n")
-        print(f"Salvati {len(nuovi_avvisi)} elementi.")
+            for hid in nuovi_identificatori:
+                f.write(hid + "\n")
+        print(f"Salvati {len(nuovi_identificatori)} nuovi blocchi.")
     else:
-        print("Nessun nuovo avviso.")
+        print("Nessun nuovo blocco di testo trovato.")
 
 if __name__ == "__main__":
     main()
