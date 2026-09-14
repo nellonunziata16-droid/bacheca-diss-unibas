@@ -1,7 +1,10 @@
 import hashlib
 import os
+import time
 import requests
 from bs4 import BeautifulSoup
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 URL = "https://diss.unibas.it/site/home/bacheca/articolo27012978.html"
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -17,7 +20,7 @@ def invia_telegram(testo):
         "disable_web_page_preview": True
     }
     try:
-        r = requests.post(endpoint, data=payload, timeout=15)
+        r = requests.post(endpoint, data=payload, timeout=20)
         r.raise_for_status()
     except Exception as e:
         print(f"Errore invio Telegram: {e}")
@@ -25,16 +28,32 @@ def invia_telegram(testo):
 def pulisci_testo(t):
     return " ".join(t.split())
 
-def main():
+def scarica_pagina(url):
+    session = requests.Session()
+    retries = Retry(
+        total=3,
+        backoff_factor=2,
+        status_forcelist=[500, 502, 503, 504]
+    )
+    session.mount("https://", HTTPAdapter(max_retries=retries))
+    
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "it-IT,it;q=0.9",
+        "Connection": "close"
     }
-    res = requests.get(URL, headers=headers, timeout=25)
-    res.raise_for_status()
+    return session.get(url, headers=headers, timeout=30)
+
+def main():
+    try:
+        res = scarica_pagina(URL)
+        res.raise_for_status()
+    except Exception as e:
+        print(f"Errore connessione a Unibas (timeout o filtro di rete): {e}")
+        return
 
     soup = BeautifulSoup(res.text, "html.parser")
-
-    # Isola l'area principale dei contenuti della bacheca Unibas
     corpo = soup.find("div", class_="testo") or soup.find("div", id="content") or soup
 
     visti_precedenti = set()
@@ -43,48 +62,49 @@ def main():
             visti_precedenti = set(line.strip() for line in f if line.strip())
 
     primo_avvio = not os.path.exists(FILE_MEMORIA)
-    nuovi_identificatori = []
+    nuovi_hash = []
 
-    # Seleziona tutti i blocchi di testo rilevanti (paragrafi, punti elenco, link)
-    elementi = corpo.find_all(["p", "li", "a"])
+    # Seleziona tutti i paragrafi di testo
+    paragrafi = corpo.find_all("p")
+    if not paragrafi:
+        paragrafi = corpo.find_all("div")
 
-    for el in elementi:
-        testo = pulisci_testo(el.get_text())
+    for p in paragrafi:
+        testo = pulisci_testo(p.get_text())
 
-        # Salta stringhe troppo corte (date isolate, freccette, menu di navigazione)
-        if len(testo) < 25:
+        # Salta il titolo della pagina, menu o frammenti corti
+        if len(testo) < 30 or "CdLM in Medicina e Chirurgia" in testo:
             continue
 
-        # Crea un identificatore univoco basato sul testo (evita problemi con caratteri speciali)
         hash_id = hashlib.md5(testo.encode("utf-8")).hexdigest()
 
         if hash_id not in visti_precedenti:
-            nuovi_identificatori.append(hash_id)
+            nuovi_hash.append(hash_id)
 
             if not primo_avvio:
-                # Controlla se l'elemento include anche un eventuale link da allegare
-                link_tag = el if el.name == "a" else el.find("a")
+                # Controlla se c'è un eventuale link allegato
+                link_tag = p.find("a")
                 link_info = ""
                 if link_tag and link_tag.get("href"):
                     href = link_tag.get("href")
-                    link_completo = href if href.startswith("http") else f"https://diss.unibas.it{href}"
-                    link_info = f"\n\n🔗 <a href='{link_completo}'>Apri allegato/link</a>"
+                    url_link = href if href.startswith("http") else f"https://diss.unibas.it{href}"
+                    link_info = f"\n\n🔗 <a href='{url_link}'>Apri allegato/link</a>"
 
                 messaggio = (
-                    f"📢 <b>Nuovo avviso Bacheca DiSS:</b>\n\n"
+                    f"📢 <b>Nuovo avviso Bacheca Medicina:</b>\n\n"
                     f"{testo}"
                     f"{link_info}"
                 )
                 invia_telegram(messaggio)
+                time.sleep(1)
 
-    # Salva i nuovi elementi per non ri-notificarli
-    if nuovi_identificatori:
+    if nuovi_hash:
         with open(FILE_MEMORIA, "a", encoding="utf-8") as f:
-            for hid in nuovi_identificatori:
+            for hid in nuovi_hash:
                 f.write(hid + "\n")
-        print(f"Salvati {len(nuovi_identificatori)} nuovi blocchi.")
+        print(f"Salvati {len(nuovi_hash)} elementi.")
     else:
-        print("Nessun nuovo blocco di testo trovato.")
+        print("Nessun nuovo avviso trovato.")
 
 if __name__ == "__main__":
     main()
