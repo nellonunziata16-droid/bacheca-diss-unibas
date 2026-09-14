@@ -14,7 +14,7 @@ def invia_telegram(testo):
     endpoint = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": CHAT_ID,
-        "text": testo,
+        "text": testo[:4000],  # Taglia entro il limite consentito da Telegram
         "disable_web_page_preview": True
     }
     try:
@@ -49,15 +49,17 @@ def main():
     soup = BeautifulSoup(res.text, "html.parser")
     corpo = soup.find("div", class_="testo") or soup.find("div", id="content") or soup
 
-    blocchi = corpo.find_all(["p", "div", "li"])
+    # Cerca esclusivamente i singoli paragrafi evitando i contenitori div giganti
+    paragrafi = corpo.find_all("p")
     visti = set()
 
-    for b in blocchi:
-        testo = pulisci_testo(b.get_text())
+    for p in paragrafi:
+        testo = pulisci_testo(p.get_text())
 
-        if DATA_TARGET in testo and len(testo) > 35 and testo not in visti:
+        # Salta frammenti corti o sezioni duplicate
+        if DATA_TARGET in testo and 30 < len(testo) < 2000 and testo not in visti:
             visti.add(testo)
-            link_tag = b.find("a")
+            link_tag = p.find("a")
             link_info = ""
             if link_tag and link_tag.get("href"):
                 href = link_tag.get("href")
