@@ -15,12 +15,11 @@ def invia_telegram(testo):
     payload = {
         "chat_id": CHAT_ID,
         "text": testo,
-        "parse_mode": "HTML",
         "disable_web_page_preview": True
     }
     try:
         r = requests.post(endpoint, data=payload, timeout=20)
-        r.raise_for_status()
+        print(f"Risposta Telegram: {r.status_code} - {r.text}")
     except Exception as e:
         print(f"Errore invio Telegram: {e}")
 
@@ -50,32 +49,24 @@ def main():
     soup = BeautifulSoup(res.text, "html.parser")
     corpo = soup.find("div", class_="testo") or soup.find("div", id="content") or soup
 
-    # Estrae tutti i blocchi di testo
     blocchi = corpo.find_all(["p", "div", "li"])
-    trovati = 0
+    visti = set()
 
     for b in blocchi:
         testo = pulisci_testo(b.get_text())
 
-        # Controlla se il blocco contiene la data di oggi 14/09/2026
-        if DATA_TARGET in testo and len(testo) > 30:
+        if DATA_TARGET in testo and len(testo) > 35 and testo not in visti:
+            visti.add(testo)
             link_tag = b.find("a")
             link_info = ""
             if link_tag and link_tag.get("href"):
                 href = link_tag.get("href")
                 url_link = href if href.startswith("http") else f"https://diss.unibas.it{href}"
-                link_info = f"\n\n🔗 <a href='{url_link}'>Apri allegato/link</a>"
+                link_info = f"\n\nLink: {url_link}"
 
-            messaggio = (
-                f"📢 <b>Avviso Bacheca del {DATA_TARGET}:</b>\n\n"
-                f"{testo}"
-                f"{link_info}"
-            )
+            messaggio = f"📢 Avviso Bacheca ({DATA_TARGET}):\n\n{testo}{link_info}"
             invia_telegram(messaggio)
-            trovati += 1
-            time.sleep(1.5)
-
-    print(f"Inviati {trovati} avvisi del {DATA_TARGET}.")
+            time.sleep(1)
 
 if __name__ == "__main__":
     main()
